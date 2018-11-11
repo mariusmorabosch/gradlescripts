@@ -1,0 +1,74 @@
+// This function manages which dependencies are needed for the generated artifacts
+ext.manageDependencies = { pom ->
+
+    pom.withXml {
+        final dependenciesNode = asNode().appendNode('dependencies')
+
+        ext.addDependency = { Dependency dep, String scope ->
+            if (dep.group == null || dep.version == null || dep.name == null || dep.name == "unspecified")
+                return // ignore invalid dependencies
+
+            final dependencyNode = dependenciesNode.appendNode('dependency')
+            dependencyNode.appendNode('groupId', dep.group)
+            dependencyNode.appendNode('artifactId', dep.name)
+            dependencyNode.appendNode('version', dep.version)
+            dependencyNode.appendNode('scope', scope)
+
+            if (!dep.transitive) {
+                // If this dependency is transitive, we should force exclude all its dependencies them from the POM
+                final exclusionNode = dependencyNode.appendNode('exclusions').appendNode('exclusion')
+                exclusionNode.appendNode('groupId', '*')
+                exclusionNode.appendNode('artifactId', '*')
+            } else if (!dep.properties.excludeRules.empty) {
+                // Otherwise add specified exclude rules
+                final exclusionNode = dependencyNode.appendNode('exclusions').appendNode('exclusion')
+                dep.properties.excludeRules.each { ExcludeRule rule ->
+                    exclusionNode.appendNode('groupId', rule.group ?: '*')
+                    exclusionNode.appendNode('artifactId', rule.module ?: '*')
+                }
+            }
+        }
+
+        project.logger.lifecycle("TEST-MESSAGE-LIFECYCLE-LEVEL")
+        configurations.all {
+            project.logger.lifecycle("IN CONFIGURATIONS")
+            project.logger.lifecycle(it.name)
+        }
+        // List all "compile" dependencies (for old Gradle)
+        configurations.compile.getAllDependencies().each { dep -> addDependency(dep, "compile") }
+        // List all "api" dependencies (for new Gradle) as "compile" dependencies
+        configurations.api.getAllDependencies().each { dep -> addDependency(dep, "compile") }
+        // List all "implementation" dependencies (for new Gradle) as "runtime" dependencies
+        configurations.implementation.getAllDependencies().each { dep -> addDependency(dep, "runtime") }
+    }
+}
+
+/*
+Configures and creates a publication task for a given module. The module name needs to be
+the exact name of the module to build. Base group id, name and version will define the corresponding
+maven artifact fields. The boolean shouldPublish allows you to easily select which modules you want published
+
+E.g: calling this function like configurePublication('MyModule', 'com.base.domain','library','1.0.0', true)
+would produce a maven artifact built from 'MyModule' that you could import in android with:
+    - implementation 'com.base.domain:library:1.0.0'
+*/
+ext.configurePublication = { String moduleName, String baseGroupId, String artifactName, String versionName, Boolean shouldPublish ->
+    if (shouldPublish) {
+        project.project(moduleName) {
+            artifactoryPublish.dependsOn('build')
+            publishing {
+                publications {
+                    aar(MavenPublication) {
+                        groupId baseGroupId
+                        version versionName
+                        artifactId artifactName
+
+                        // Tell maven to prepare the generated "*.aar" file for publishing
+                        artifact("$buildDir/outputs/aar/${project.getName()}-release.aar")
+                        manageDependencies(pom)
+                    }
+                }
+            }
+        }
+    }
+}
